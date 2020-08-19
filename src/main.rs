@@ -1,6 +1,7 @@
 use std::io;
 use std::fs::{self, DirEntry, Metadata};
 use std::time::SystemTime;
+use std::error::Error;
 
 #[derive(Debug)]
 struct ExpandedDirEntry {
@@ -10,26 +11,41 @@ struct ExpandedDirEntry {
     modified: SystemTime
 }
 
-fn main() -> io::Result<()> {
-    for path in std::env::args().skip(1) {
+fn main() -> Result<(), Box<dyn Error>> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+
+    if args.is_empty() {
+        println!("usage: {} path [...]", std::env::args().nth(0).unwrap_or("main".to_owned()));
+        std::process::exit(2);
+    }
+
+    for path in args {
         println!("{}", path);
 
-        let mut entries: Vec<ExpandedDirEntry> = fs::read_dir(path)?
-            .filter_map(|entry_result| entry_result
+        let mut entries: Vec<ExpandedDirEntry> = 
+            fs::read_dir(path)?
+            .map(|entry_result| { entry_result
                 .map(|entry| {
-
-                    let file_name = entry.file_name().into_string().map_err(|_| io::Error::new(io::ErrorKind::Other, "Bad unicodes in the filename!"))?;
                     let metadata = entry.metadata()?;
-                    let modified = metadata.modified()?;
 
-                    Ok(ExpandedDirEntry { dir_entry: entry, file_name, metadata, modified })
+                    let file_name = entry.file_name().into_string().map_err(|_| "The filename couldn't be decoded as Unicode; cowardly refusing to operate on it")?;
 
-                }).ok().map(|inner: io::Result<ExpandedDirEntry>| inner.ok()).flatten()
+                    if !metadata.is_file() {
+                        eprintln!("warning: skipping non-file: {}", entry.path().to_string_lossy());
+                        Ok(None)
+                    } else {
 
-                .filter(|ede| ede.metadata.is_file())
-                .filter(|ede| ede.file_name.ends_with(".mp3"))
-            )
-            .collect();
+                        let modified = metadata.modified()?;
+                        Ok(Some(ExpandedDirEntry { dir_entry: entry, file_name, metadata, modified }))
+
+                    }
+
+                })
+            })
+            
+            .collect::<Result<Vec<Result<Option<ExpandedDirEntry>, Box<dyn Error>>>, io::Error>>()?
+            .into_iter().collect::<Result<Vec<Option<ExpandedDirEntry>>, Box<dyn Error>>>()?
+            .into_iter().filter_map(|opt| opt).collect();
 
         entries.sort_by_key(|ede| ede.modified);
 
@@ -44,7 +60,7 @@ fn main() -> io::Result<()> {
                 println!("    {} -> {}", ede.file_name, new_file_name);
 
                 if let Err(io_err) = fs::rename(ede.dir_entry.path(), new_path) {
-                    println!("@@@ Error: {}", io_err.to_string());
+                    println!("        Error: {}", io_err.to_string());
                 };
 
             }
@@ -52,4 +68,5 @@ fn main() -> io::Result<()> {
     }
 
     Ok(())
+
 }
